@@ -1,628 +1,54 @@
-import * as THREE from "three";
-import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
-import GUI from "lil-gui";
-import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { RGBELoader } from "three/examples/jsm/loaders/RGBELoader.js";
-import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
-import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
-import { ShaderPass } from "three/examples/jsm/postprocessing/ShaderPass.js";
-import { DRACOLoader, KTX2Loader } from "three/examples/jsm/Addons.js";
+import * as THREE from 'three';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { VRButton } from 'three/examples/jsm/webxr/VRButton.js';
+import { PlayerSystem } from './src/modules/PlayerSystem.js';
+import { GuiSystem } from './src/modules/GuiSystem.js';
+import { ModelLoader } from './src/modules/ModelLoader.js';
+import { InteractionSystem } from './src/modules/InteractionSystem.js';
+import { RendererSystem } from './src/modules/RendererSystem.js';
+import { CameraSystem } from './src/modules/CameraSystem.js';
+import { SceneSystem } from './src/modules/SceneSystem.js';
+import { ThunderAudio } from './src/audio/ThunderAudio.js';
+import { RealisticRainShader } from './src/shaders/RealisticRainShader.js';
+import { settings } from './src/config/settings.js';
 import ControlsVR from './controlsVR.js';
 import { Teleport } from './teleport.js';
 
 
-// === ThunderAudio Class ===
-class ThunderAudio {
-  constructor() {
-    this.audioContext = null
-    this.thunderSounds = []
-    this.initAudioContext()
+// Khởi tạo Info Display System
+let modelInfoDisplay;
+
+//=== Code đã được chuyển sang các module ===
+//ThunderAudio -> src/audio/ThunderAudio.js
+//RealisticRainShader -> src/shaders/RealisticRainShader.js 
+//RealisticRainSystem -> src/systems/RealisticRainSystem.js
+//LightningShader -> src/shaders/LightningShader.js
+//LightningSystem -> src/systems/LightningSystem.js
+
+// === INITIALIZE CORE SYSTEMS ===
+const scene = new SceneSystem();
+const mainScene = scene.getScene();
+Teleport.setupTeleport(mainScene);
+
+// Setup viewer rig and camera
+const viewerRig = new THREE.Group();
+mainScene.add(viewerRig);
+
+const cameraSystem = new CameraSystem();
+const mainCamera = cameraSystem.getMainCamera();
+viewerRig.add(mainCamera);
+
+// Khởi tạo hệ thống hiển thị thông tin sau khi camera được tạo
+modelInfoDisplay = new InfoDisplay(mainScene, mainCamera);
+
+// Cleanup khi unload
+window.addEventListener('unload', () => {
+  if (modelInfoDisplay) {
+    modelInfoDisplay.dispose();
   }
-
-  initAudioContext() {
-    try {
-      this.audioContext = new (window.AudioContext || window.webkitAudioContext)()
-    } catch (e) {
-      console.warn("Web Audio API không được hỗ trợ")
-    }
-  }
-
-  generateThunderSound(duration = 2000, intensity = 0.5) {
-    if (!this.audioContext) return
-
-    const sampleRate = this.audioContext.sampleRate
-    const length = sampleRate * (duration / 1000)
-    const buffer = this.audioContext.createBuffer(1, length, sampleRate)
-    const data = buffer.getChannelData(0)
-
-    for (let i = 0; i < length; i++) {
-      const t = i / length
-      const envelope = Math.exp(-t * 3) * intensity
-      const noise = (Math.random() * 2 - 1) * envelope
-      const lowFreq = Math.sin(t * Math.PI * 20) * envelope * 0.3
-      data[i] = noise + lowFreq
-    }
-
-    return buffer
-  }
-
-  playThunder(intensity = 0.5) {
-    if (!this.audioContext) return
-
-    const buffer = this.generateThunderSound(1500 + Math.random() * 1000, intensity)
-    const source = this.audioContext.createBufferSource()
-    const gainNode = this.audioContext.createGain()
-
-    source.buffer = buffer
-    source.connect(gainNode)
-    gainNode.connect(this.audioContext.destination)
-
-    gainNode.gain.setValueAtTime(0, this.audioContext.currentTime)
-    gainNode.gain.linearRampToValueAtTime(intensity, this.audioContext.currentTime + 0.1)
-    gainNode.gain.exponentialRampToValueAtTime(0.01, this.audioContext.currentTime + 2)
-
-    source.start()
-    source.stop(this.audioContext.currentTime + 3)
-  }
-}
-
-// === RealisticRainShader ===
-const RealisticRainShader = {
-  uniforms: {
-    time: { value: 0.0 },
-    resolution: { value: new THREE.Vector2() },
-    rainIntensity: { value: 0.5 },
-    windDirection: { value: new THREE.Vector2(0.1, 0.0) },
-    cameraPosition: { value: new THREE.Vector3() },
-  },
-
-  vertexShader: `
-    varying vec2 vUv;
-    void main() {
-      vUv = uv;
-      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-    }
-  `,
-
-  fragmentShader: `
-    uniform float time;
-    uniform vec2 resolution;
-    uniform float rainIntensity;
-    uniform vec2 windDirection;
-    varying vec2 vUv;
-    
-    float random(vec2 st) {
-      return fract(sin(dot(st.xy, vec2(12.9898,78.233))) * 43758.5453123);
-    }
-    
-    float noise(vec2 st) {
-      vec2 i = floor(st);
-      vec2 f = fract(st);
-      float a = random(i);
-      float b = random(i + vec2(1.0, 0.0));
-      float c = random(i + vec2(0.0, 1.0));
-      float d = random(i + vec2(1.0, 1.0));
-      vec2 u = f * f * (3.0 - 2.0 * f);
-      return mix(a, b, u.x) + (c - a)* u.y * (1.0 - u.x) + (d - b) * u.x * u.y;
-    }
-    
-    float rainDrop(vec2 uv, float speed, float size, float offset) {
-      uv.y += time * speed;
-      uv.x += windDirection.x * time * 0.3;
-      uv = fract(uv + offset);
-      
-      float drop = length(vec2(uv.x - 0.5, (uv.y - 0.5) * 3.0));
-      drop = 1.0 - smoothstep(0.0, size, drop);
-      
-      float tail = smoothstep(0.1, 0.9, uv.y) * smoothstep(0.0, 0.1, abs(uv.x - 0.5));
-      drop = max(drop, tail * 0.3);
-      
-      return drop;
-    }
-    
-    void main() {
-      vec2 uv = gl_FragCoord.xy / resolution.xy;
-      
-      float rain = 0.0;
-      
-      for(int i = 0; i < 15; i++) {
-        float fi = float(i);
-        float scale = 1.0 + fi * 0.3;
-        float speed = 2.0 + fi * 0.5;
-        float size = 0.02 + fi * 0.01;
-        float offset = fi * 0.1;
-        
-        rain += rainDrop(uv * scale, speed, size, offset) * (0.8 - fi * 0.05);
-      }
-      
-      for(int i = 0; i < 8; i++) {
-        float fi = float(i);
-        float scale = 0.3 + fi * 0.1;
-        float speed = 1.0 + fi * 0.2;
-        float size = 0.05 + fi * 0.02;
-        float offset = fi * 0.2;
-        
-        rain += rainDrop(uv * scale, speed, size, offset) * 0.2;
-      }
-      
-      float groundSplash = 0.0;
-      if(uv.y < 0.3) {
-        float splashNoise = noise(uv * 20.0 + time * 2.0);
-        groundSplash = splashNoise * rainIntensity * 0.1 * (0.3 - uv.y);
-      }
-      
-      rain = clamp(rain * rainIntensity, 0.0, 1.0);
-      
-      vec3 rainColor = vec3(0.7, 0.8, 0.9);
-      vec3 splashColor = vec3(0.9, 0.95, 1.0);
-      
-      vec4 finalColor = vec4(rainColor, rain) + vec4(splashColor, groundSplash);
-      
-      gl_FragColor = finalColor;
-    }
-  `,
-}
-
-// === RealisticRainSystem ===
-class RealisticRainSystem {
-  constructor(scene) {
-    this.scene = scene
-    this.rainDrops = []
-    this.splashParticles = []
-    this.rainMesh = null
-    this.splashMesh = null
-    this.maxRainDrops = 0
-    this.rainIntensity = 0
-    this.windForce = new THREE.Vector3(0, 0, 0)
-
-    this.createRainMaterials()
-  }
-
-  createRainMaterials() {
-    this.rainMaterial = new THREE.MeshBasicMaterial({
-      color: 0xaaaaff,
-      transparent: true,
-      opacity: 0.6,
-      depthWrite: false,
-      side: THREE.DoubleSide,
-    })
-
-    this.splashMaterial = new THREE.MeshBasicMaterial({
-      color: 0xffffff,
-      transparent: true,
-      opacity: 0.8,
-      depthWrite: false,
-    })
-  }
-
-  generateRain(intensity, windX = 0, windZ = 0) {
-    this.rainIntensity = intensity
-    this.windForce.set(windX, 0, windZ)
-
-    this.clearRain()
-
-    if (intensity === 0 || !groundBoundingBox) return
-
-    this.maxRainDrops = Math.floor(intensity * 83500)
-
-    const rainGeometry = this.createRainDropGeometry()
-
-    this.rainMesh = new THREE.InstancedMesh(rainGeometry, this.rainMaterial, this.maxRainDrops)
-    this.rainMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
-
-    this.initializeRainDrops()
-
-    this.createSplashSystem()
-
-    this.scene.add(this.rainMesh)
-    if (this.splashMesh) {
-      this.scene.add(this.splashMesh)
-    }
-  }
-
-  createRainDropGeometry() {
-    const geometry = new THREE.ConeGeometry(0.008, 0.4, 4)
-    geometry.translate(0, -0.2, 0)
-    return geometry
-  }
-
-  initializeRainDrops() {
-    const dummy = new THREE.Object3D()
-    const groundSize = new THREE.Vector3()
-    groundBoundingBox.getSize(groundSize)
-    const groundCenter = new THREE.Vector3()
-    groundBoundingBox.getCenter(groundCenter)
-
-    for (let i = 0; i < this.maxRainDrops; i++) {
-      const x = groundCenter.x + (Math.random() - 0.5) * groundSize.x
-      const y = Math.random() * 150 + 50
-      const z = groundCenter.z + (Math.random() - 0.5) * groundSize.z
-
-      dummy.position.set(x, y, z)
-
-      const windTilt = Math.atan2(this.windForce.x, 10) * 0.3
-      dummy.rotation.set(0, 0, windTilt)
-
-      const scale = 0.8 + Math.random() * 0.4
-      dummy.scale.set(scale, 1 + Math.random() * 0.5, scale)
-
-      dummy.updateMatrix()
-      this.rainMesh.setMatrixAt(i, dummy.matrix)
-
-      this.rainDrops[i] = {
-        velocity: new THREE.Vector3(0, -(8 + Math.random() * 4), 0),
-        life: Math.random(),
-        initialY: y,
-      }
-    }
-  }
-
-  createSplashSystem() {
-    const splashCount = Math.floor(this.maxRainDrops * 0.1)
-    if (splashCount === 0) return
-
-    const splashGeometry = new THREE.SphereGeometry(0.05, 6, 4)
-    this.splashMesh = new THREE.InstancedMesh(splashGeometry, this.splashMaterial, splashCount)
-    this.splashMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
-
-    for (let i = 0; i < splashCount; i++) {
-      this.splashParticles[i] = {
-        position: new THREE.Vector3(),
-        velocity: new THREE.Vector3(),
-        life: 0,
-        maxLife: 0.5,
-        active: false,
-      }
-    }
-  }
-
-  update(deltaTime) {
-    if (!this.rainMesh || this.rainIntensity === 0) return
-
-    this.updateRainDrops(deltaTime)
-    this.updateSplashes(deltaTime)
-  }
-
-  updateRainDrops(deltaTime) {
-    const dummy = new THREE.Object3D()
-    const groundSize = new THREE.Vector3()
-    groundBoundingBox.getSize(groundSize)
-    const groundCenter = new THREE.Vector3()
-    groundBoundingBox.getCenter(groundCenter)
-
-    for (let i = 0; i < this.maxRainDrops; i++) {
-      const drop = this.rainDrops[i]
-
-      this.rainMesh.getMatrixAt(i, dummy.matrix)
-      dummy.matrix.decompose(dummy.position, dummy.quaternion, dummy.scale)
-
-      drop.velocity.y -= 9.8 * deltaTime * 2
-      drop.velocity.x = this.windForce.x * 0.5
-      drop.velocity.z = this.windForce.z * 0.5
-
-      dummy.position.add(drop.velocity.clone().multiplyScalar(deltaTime))
-
-      if (dummy.position.y <= 0.1) {
-        this.createSplash(dummy.position.clone())
-
-        dummy.position.set(
-          groundCenter.x + (Math.random() - 0.5) * groundSize.x,
-          drop.initialY + Math.random() * 50,
-          groundCenter.z + (Math.random() - 0.5) * groundSize.z,
-        )
-        drop.velocity.set(0, -(8 + Math.random() * 4), 0)
-      }
-
-      const velocityDirection = drop.velocity.clone().normalize()
-      dummy.rotation.set(0, 0, Math.atan2(velocityDirection.x, -velocityDirection.y))
-
-      dummy.updateMatrix()
-      this.rainMesh.setMatrixAt(i, dummy.matrix)
-    }
-
-    this.rainMesh.instanceMatrix.needsUpdate = true
-  }
-
-  createSplash(position) {
-    for (let i = 0; i < this.splashParticles.length; i++) {
-      const splash = this.splashParticles[i]
-      if (!splash.active) {
-        splash.position.copy(position)
-        splash.position.y = 0.05
-
-        splash.velocity.set((Math.random() - 0.5) * 2, Math.random() * 3 + 1, (Math.random() - 0.5) * 2)
-
-        splash.life = 0
-        splash.active = true
-        break
-      }
-    }
-  }
-
-  updateSplashes(deltaTime) {
-    if (!this.splashMesh) return
-
-    const dummy = new THREE.Object3D()
-
-    for (let i = 0; i < this.splashParticles.length; i++) {
-      const splash = this.splashParticles[i]
-
-      if (!splash.active) continue
-
-      splash.life += deltaTime
-
-      if (splash.life >= splash.maxLife) {
-        splash.active = false
-        dummy.position.set(0, -1000, 0)
-        dummy.scale.set(0, 0, 0)
-      } else {
-        splash.velocity.y -= 9.8 * deltaTime
-        splash.position.add(splash.velocity.clone().multiplyScalar(deltaTime))
-
-        dummy.position.copy(splash.position)
-
-        const lifeRatio = splash.life / splash.maxLife
-        const scale = (1 - lifeRatio) * 0.5
-        dummy.scale.set(scale, scale, scale)
-      }
-
-      dummy.updateMatrix()
-      this.splashMesh.instanceMatrix.needsUpdate = true
-    }
-  }
-
-  clearRain() {
-    if (this.rainMesh) {
-      this.scene.remove(this.rainMesh)
-      this.rainMesh.geometry.dispose()
-      this.rainMesh = null
-    }
-
-    if (this.splashMesh) {
-      this.scene.remove(this.splashMesh)
-      this.splashMesh.geometry.dispose()
-      this.splashMesh = null
-    }
-
-    this.rainDrops = []
-    this.splashParticles = []
-  }
-
-  setWindForce(x, z) {
-    this.windForce.set(x, 0, z)
-  }
-
-  setIntensity(intensity) {
-    this.rainIntensity = intensity
-
-    if (this.rainMesh) {
-      this.rainMaterial.opacity = 0.3 + intensity * 0.5
-    }
-  }
-}
-
-// === LightningShader ===
-const LightningShader = {
-  uniforms: {
-    time: { value: 0.0 },
-    resolution: { value: new THREE.Vector2() },
-    lightningIntensity: { value: 0.0 },
-    lightningPosition: { value: new THREE.Vector2(0.5, 0.8) },
-    lightningBranches: { value: 5.0 },
-  },
-
-  vertexShader: `
-    varying vec2 vUv;
-    void main() {
-      vUv = uv;
-      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-    }
-  `,
-
-  fragmentShader: `
-    uniform float time;
-    uniform vec2 resolution;
-    uniform float lightningIntensity;
-    uniform vec2 lightningPosition; // Đã sửa: uniform vec2
-    uniform float lightningBranches;
-    varying vec2 vUv;
-    
-    float random(vec2 st) {
-      return fract(sin(dot(st.xy, vec2(12.9898,78.233))) * 43758.5453123);
-    }
-    
-    float noise(vec2 st) {
-      vec2 i = floor(st);
-      vec2 f = fract(st);
-      float a = random(i);
-      float b = random(i + vec2(1.0, 0.0));
-      float c = random(i + vec2(0.0, 1.0));
-      float d = random(i + vec2(1.0, 1.0));
-      vec2 u = f * f * (3.0 - 2.0 * f);
-      return mix(a, b, u.x) + (c - a)* u.y * (1.0 - u.x) + (d - b) * u.x * u.y;
-    }
-    
-    float lightning(vec2 uv, vec2 start, vec2 end, float thickness) {
-      vec2 dir = normalize(end - start);
-      vec2 perp = vec2(-dir.y, dir.x);
-      
-      float t = dot(uv - start, dir) / dot(end - start, dir);
-      t = clamp(t, 0.0, 1.0);
-      
-      vec2 closest = start + t * (end - start);
-      float dist = length(uv - closest);
-      
-      float zigzag = noise(vec2(t * 20.0, time * 10.0)) * 0.02;
-      dist += zigzag;
-      
-      return 1.0 - smoothstep(0.0, thickness, dist);
-    }
-    
-    void main() {
-      vec2 uv = gl_FragCoord.xy / resolution.xy;
-      
-      float bolt = 0.0;
-
-      // Đã sửa: Sử dụng lightningPosition trực tiếp
-      vec2 start = lightningPosition;
-      vec2 end = vec2(lightningPosition.x + (noise(vec2(time * 5.0)) - 0.5) * 0.3, 0.0);
-      bolt += lightning(uv, start, end, 0.005) * 2.0;
-      
-      for(int i = 0; i < int(lightningBranches); i++) {
-        float fi = float(i);
-        float t = fi / lightningBranches;
-        vec2 branchStart = mix(start, end, t);
-        vec2 branchEnd = branchStart + vec2(
-          (noise(vec2(fi * 10.0, time * 3.0)) - 0.5) * 0.2,
-          -(noise(vec2(fi * 15.0, time * 2.0))) * 0.3
-        );
-        bolt += lightning(uv, branchStart, branchEnd, 0.003) * 0.8;
-      }
-      
-      float glow = bolt * 3.0;
-      glow += bolt * 0.5 / (distance(uv, lightningPosition) + 0.1);
-      
-      vec3 lightningColor = vec3(0.8, 0.9, 1.0) * glow * lightningIntensity;
-      
-      gl_FragColor = vec4(lightningColor, glow * lightningIntensity);
-    }
-  `,
-}
-
-// === LightningSystem ===
-class LightningSystem {
-  constructor(scene, camera) {
-    this.scene = scene
-    this.camera = camera
-    this.lightningFlashes = []
-    this.ambientLightning = null
-    this.thunderAudio = null
-    this.lastLightningTime = 0
-    this.lightningInterval = 3000
-
-    this.createAmbientLightning()
-  }
-
-  createAmbientLightning() {
-    this.ambientLightning = new THREE.DirectionalLight(0x9999ff, 0)
-    this.ambientLightning.position.set(0, 50, 0)
-    this.scene.add(this.ambientLightning)
-  }
-
-  createLightningFlash(position = null) {
-    if (!position) {
-      position = new THREE.Vector3((Math.random() - 0.5) * 100, 30 + Math.random() * 20, (Math.random() - 0.5) * 100)
-    }
-
-    const lightningLight = new THREE.PointLight(0x9999ff, 2, 50)
-    lightningLight.position.copy(position)
-    this.scene.add(lightningLight)
-
-    const lightningGeometry = new THREE.CylinderGeometry(0.1, 0.1, 30, 8)
-    const lightningMaterial = new THREE.MeshBasicMaterial({
-      color: 0xffffff,
-      transparent: true,
-      opacity: 0.9,
-    })
-
-    const lightningBolt = new THREE.Mesh(lightningGeometry, lightningMaterial)
-    lightningBolt.position.copy(position)
-    lightningBolt.position.y -= 15
-
-    const points = []
-    for (let i = 0; i <= 20; i++) {
-      const y = position.y - (i / 20) * 30
-      const x = position.x + (Math.random() - 0.5) * 2
-      const z = position.z + (Math.random() - 0.5) * 2
-      points.push(new THREE.Vector3(x, y, z))
-    }
-
-    const lightningPath = new THREE.CatmullRomCurve3(points)
-    const tubeGeometry = new THREE.TubeGeometry(lightningPath, 20, 0.05, 8, false)
-    const tubeMaterial = new THREE.MeshBasicMaterial({
-      color: 0xffffff,
-      transparent: true,
-      opacity: 1.0,
-    })
-
-    const lightningTube = new THREE.Mesh(tubeGeometry, tubeMaterial)
-    this.scene.add(lightningTube)
-
-    const flash = {
-      light: lightningLight,
-      bolt: lightningTube,
-      startTime: Date.now(),
-      duration: 200 + Math.random() * 300,
-    }
-
-    this.lightningFlashes.push(flash)
-
-    setTimeout(
-      () => {
-        this.playThunder()
-      },
-      100 + Math.random() * 500,
-    )
-
-    this.ambientLightning.intensity = 0.5
-    setTimeout(() => {
-      this.ambientLightning.intensity = 0
-    }, 100)
-  }
-
-  playThunder() {
-    if (this.thunderAudio) {
-      this.thunderAudio.playThunder(0.5 + Math.random() * 0.3)
-    }
-  }
-
-  update(weatherIntensity) {
-    const currentTime = Date.now()
-
-    if (weatherIntensity > 0.3 && currentTime - this.lastLightningTime > this.lightningInterval) {
-      if (Math.random() < weatherIntensity * 0.3) {
-        this.createLightningFlash()
-        this.lastLightningTime = currentTime
-        this.lightningInterval = 2000 + Math.random() * 3000 * (1 - weatherIntensity)
-      }
-    }
-
-    this.lightningFlashes = this.lightningFlashes.filter((flash) => {
-      const elapsed = currentTime - flash.startTime
-      const progress = elapsed / flash.duration
-
-      if (progress >= 1) {
-        this.scene.remove(flash.light)
-        this.scene.remove(flash.bolt)
-        return false
-      }
-
-      const opacity = 1 - progress
-      flash.light.intensity = 2 * opacity
-      flash.bolt.material.opacity = opacity
-
-      return true
-    })
-  }
-}
-
-// === SCENE SETUP ===
-const scene = new THREE.Scene()
-// after scene is created:
-Teleport.setupTeleport(scene);
-
-
-// === VIEWER RIG SETUP ===
-let viewerRig = new THREE.Group(); // Khai báo viewerRig
-scene.add(viewerRig); // Thêm viewerRig vào scene
-
-
-// === CAMERAS ===
-// Camera là con của viewerRig
-const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 200);
-camera.position.set(0, 1.6, 0); // Chiều cao mắt người ~1.6m
-viewerRig.add(camera);
+  scene.dispose();
+  cameraSystem.dispose();
+});
 
 // Đặt vị trí ban đầu cho viewerRig
 viewerRig.position.set(0, 0, 0);
@@ -633,25 +59,9 @@ function getActiveCamera(renderer, camera) {
 
 
 
-// === RENDERER ===
-const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, logarithmicDepthBuffer: true, xrCompatible: true  })
-renderer.setSize(window.innerWidth, window.innerHeight)
-renderer.outputColorSpace = THREE.SRGBColorSpace; // Đã sửa: Sử dụng outputColorSpace
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)) // Tối ưu cho VR
-renderer.toneMapping = THREE.ACESFilmicToneMapping
-renderer.shadowMap.enabled = true
-renderer.shadowMap.type = THREE.PCFSoftShadowMap
-renderer.xr.enabled = true; // Đã sửa: Bật WebXR
-document.body.appendChild(renderer.domElement)
-document.body.appendChild(VRButton.createButton(renderer)) // Đã sửa: Thêm nút VR
-
-// Style
-document.body.style.margin = "0"
-document.body.style.overflow = "hidden"
-document.body.style.backgroundColor = "#000"
-renderer.domElement.style.display = "block"
-renderer.domElement.setAttribute("tabindex", "0")
-renderer.domElement.focus()
+// === INITIALIZE RENDERER ===
+const rendererSystem = new RendererSystem();
+const renderer = rendererSystem.renderer;
 
 const canvas = document.createElement('canvas');
 const gl = canvas.getContext('webgl2');
@@ -774,26 +184,45 @@ new RGBELoader().setPath("models1/").load(
   (err) => console.error("Error loading noon2.hdr:", err),
 )
 
-// === KHAI BÁO CONTROLS ===
-const controls = new OrbitControls(camera, renderer.domElement)
-controls.enableDamping = true
-controls.dampingFactor = 0.25
-controls.rotateSpeed = 0.8
-controls.zoomSpeed = 1.0
-controls.panSpeed = 0.5
-controls.enablePan = true
-controls.minPolarAngle = 0
-controls.maxPolarAngle = Math.PI / 2
-controls.minDistance = 5
-controls.maxDistance = 100
-controls.enableZoom = false
+// === INITIALIZE SYSTEMS ===
+const controls = new OrbitControls(mainCamera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.25;
+controls.rotateSpeed = 0.8;
+controls.zoomSpeed = 1.0;
+controls.panSpeed = 0.5;
+controls.enablePan = true;
+controls.minPolarAngle = 0;
+controls.maxPolarAngle = Math.PI / 2;
+controls.minDistance = 5;
+controls.maxDistance = 100;
+controls.enableZoom = false;
+
+// Initialize core systems
+const modelLoader = new ModelLoader(mainScene);
+const playerSystem = new PlayerSystem(mainScene, mainCamera, controls);
+const interactionSystem = new InteractionSystem(mainScene, mainCamera, playerSystem.player, modelLoader);
 
 // === WEATHER SYSTEMS ===
-let realisticRainSystem = null
-let lightningSystem = null
-let thunderAudio = null
-let rainAudio = null
-let stormAudio = null
+const realisticRainSystem = new RealisticRainSystem(mainScene);
+const lightningSystem = new LightningSystem(mainScene);
+const thunderAudio = new ThunderAudio();
+const rainAudio = new THREE.Audio(new THREE.AudioListener());
+const stormAudio = new THREE.Audio(new THREE.AudioListener());
+
+// Load audio
+const audioLoader = new THREE.AudioLoader();
+audioLoader.load('/rain.mp3', (buffer) => {
+  rainAudio.setBuffer(buffer);
+  rainAudio.setLoop(true);
+  rainAudio.setVolume(settings.stormVolume);
+});
+
+audioLoader.load('/storm.mp3', (buffer) => {
+  stormAudio.setBuffer(buffer);
+  stormAudio.setLoop(true);
+  stormAudio.setVolume(settings.stormVolume);
+});
 
 // === Mini map camera ===
 let miniMapSizeWorld = 50
@@ -1787,69 +1216,61 @@ function checkCollision(position, direction, distance = 1.5) {
 // === INTERACTION ===
 const raycasterInteraction = new THREE.Raycaster()
 const mouse = new THREE.Vector2()
-const infoDisplay = document.createElement("div")
-infoDisplay.style.position = "absolute"
-infoDisplay.style.backgroundColor = "rgba(0, 0, 0, 0.7)"
-infoDisplay.style.color = "white"
-infoDisplay.style.padding = "8px"
-infoDisplay.style.borderRadius = "5px"
-infoDisplay.style.pointerEvents = "none"
-infoDisplay.style.display = "none"
-infoDisplay.style.zIndex = "100"
-document.body.appendChild(infoDisplay)
+// Khởi tạo hệ thống hiển thị thông tin
+modelInfoDisplay = new InfoDisplay(scene, camera);
 
 
-const clock = new THREE.Clock()
-let isMovingMode = false;
+const clock = new THREE.Clock();
 
-// Đổi tên hàm animate thành updateFrame để nhất quán
+// Main update loop
 function updateFrame() {
   const delta = clock.getDelta();
   const elapsedTime = clock.getElapsedTime();
 
-  if (realisticRainSystem) {
-    realisticRainSystem.update(delta);
-  }
+  // Update all systems
+  playerSystem.update(delta);
+  interactionSystem.update(renderer);
+  realisticRainSystem.update(delta);
+  lightningSystem.update(elapsedTime);
 
-  if (lightningSystem) {
-    lightningSystem.update(settings.lightningFrequency);
-  }
-
-  rainPass.uniforms.time.value = elapsedTime;
-  rainPass.uniforms.cameraPosition.value.copy(camera.position);
-  rainPass.uniforms.rainIntensity.value = settings.rainIntensity;
-  rainPass.uniforms.windDirection.value.set(settings.windX * 0.01, settings.windZ * 0.01);
-
-  lightningPass.uniforms.time.value = elapsedTime;
-  lightningPass.uniforms.lightningPosition.value.set(0.3 + Math.sin(elapsedTime * 0.5) * 0.4, 0.8);
-  lightningPass.uniforms.lightningIntensity.value = settings.lightningFrequency;
-
-  const cameraXR = renderer.xr.getCamera(camera);
-
-  // Xử lý logic di chuyển và điều khiển tùy thuộc vào chế độ VR hay Desktop
-if (renderer.xr.isPresenting) {
- ControlsVR.handleVRControllerInput(
-  viewerRig, camera, renderer,
-  groundMesh, obstacles, collisionCubes, houseModel,
-  player,
-  delta 
-);
-} else {
-    // Trong chế độ Desktop
+  // Update VR if active
+  if (renderer.xr.isPresenting) {
+    ControlsVR.handleVRControllerInput(
+      viewerRig, mainCamera, renderer,
+      modelLoader.groundMesh, 
+      modelLoader.obstacles,
+      modelLoader.collisionCubes,
+      modelLoader.houseModel,
+      playerSystem.player,
+      delta
+    );
+  } else {
+    // Desktop mode
     if (isMovingMode) {
       movePlayer(delta);
     } else {
-      controls.update(); // Cập nhật OrbitControls khi không di chuyển bằng bàn phím
+      controls.update();
     }
-    // Đồng bộ vị trí của viewerRig với player mesh trong chế độ desktop
-    viewerRig.position.copy(player.position);
-    viewerRig.position.y = 0; // Đảm bảo viewerRig ở mặt đất
+    // Sync viewer rig with player
+    viewerRig.position.copy(playerSystem.player.position);
+    viewerRig.position.y = 0;
   }
 
+  // Update rendering
   renderer.setViewport(0, 0, window.innerWidth, window.innerHeight);
   renderer.setScissorTest(false);
-  renderer.render(scene, camera,);
 
+  // Update info display
+  if (modelInfoDisplay) {
+    const isVR = renderer.xr.isPresenting;
+    const objects = mainScene.children.filter(obj => obj.userData && obj.userData.info);
+    modelInfoDisplay.update(isVR, objects);
+  }
+
+  // Render main scene
+  renderer.render(mainScene, mainCamera);
+
+  // Render minimap if enabled
   if (settings.miniMap) {
     const mapSizePx = 200;
     const marginPx = 15;
@@ -1857,82 +1278,67 @@ if (renderer.xr.isPresenting) {
     renderer.setScissor(marginPx, window.innerHeight - mapSizePx - marginPx, mapSizePx, mapSizePx);
     renderer.setScissorTest(true);
     renderer.clearDepth();
-    miniPlayer.position.set(player.position.x, 0.5, player.position.z);
-    renderer.render(scene, miniCamera);
+    
+    // Update minimap player position
+    miniPlayer.position.copy(playerSystem.player.position);
+    miniPlayer.position.y = 0.5;
+    
+    // Render minimap
+    renderer.render(mainScene, cameraSystem.getMiniMapCamera());
     renderer.setScissorTest(false);
   }
 
+  // Update interaction checks
   checkHouseTrigger();
   detectNearbyInfo();
 }
 
 
 function detectNearbyInfo() {
-  const maxVisibleDistance = 18
-  const cameraFrustum = new THREE.Frustum()
-  const camViewProjMatrix = new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse)
-  cameraFrustum.setFromProjectionMatrix(camViewProjMatrix)
+  // Sử dụng modelInfoDisplay để xử lý hiển thị thông tin
+  if (modelInfoDisplay) {
+    const isVR = renderer.xr.isPresenting;
+    const isInFrontOfHouse = isPlayerInFrontOfHouse();
 
-  if (infoDisplay.style.display === "block") {
-    document.querySelectorAll(".info-label-instance").forEach((e) => e.remove())
-    return
-  }
-
-  document.querySelectorAll(".info-label-instance").forEach((e) => e.remove())
-  const isInFrontOfHouse = isPlayerInFrontOfHouse()
-
-  for (const model of interactiveObjects) {
-    if (!model.userData.info) continue
-    if ((model.userData.isCarInHouse || model.userData.type === "house") && !isInFrontOfHouse) continue
-
-    const box = new THREE.Box3().setFromObject(model)
-    const center = box.getCenter(new THREE.Vector3())
-    const distance = camera.position.distanceTo(center)
-    const isVisible = cameraFrustum.intersectsBox(box)
-
-    if (isVisible && distance < maxVisibleDistance) {
-      const screenPosition = center.clone().project(camera)
-      const x = (screenPosition.x * 0.5 + 0.5) * window.innerWidth
-      const y = (-screenPosition.y * 0.5 + 0.5) * window.innerHeight
-
-      const label = document.createElement("div")
-      label.className = "info-label-instance"
-      label.innerText = model.userData.info
-      Object.assign(label.style, {
-        position: "absolute",
-        left: `${x}px`,
-        top: `${y}px`,
-        transform: "translate(-50%, -100%)",
-        background: "rgba(0,0,0,0.7)",
-        color: "white",
-        padding: "4px 8px",
-        borderRadius: "4px",
-        fontSize: "12px",
-        pointerEvents: "none",
-        whiteSpace: "nowrap",
-        zIndex: 100,
-      })
-      document.body.appendChild(label)
+    // Lọc các object cần hiển thị thông tin
+    let visibleObjects = [];
+    
+    for (const model of interactiveObjects) {
+      if (!model.userData.info) continue;
+      if ((model.userData.isCarInHouse || model.userData.type === "house") && !isInFrontOfHouse) continue;
+      
+      const box = new THREE.Box3().setFromObject(model);
+      const center = box.getCenter(new THREE.Vector3());
+      const distance = camera.position.distanceTo(center);
+      
+      if (distance < 18) {
+        visibleObjects.push(model);
+      }
     }
+    
+    // Cập nhật hiển thị thông tin
+    modelInfoDisplay.update(isVR, visibleObjects);
   }
 }
 
 function showInfoLabel(info, position) {
-  infoDisplay.textContent = info
-  infoDisplay.style.display = "block"
-  const vector = position.clone().project(camera)
-  const x = (vector.x * 0.5 + 0.5) * window.innerWidth
-  const y = (-vector.y * 0.5 + 0.5) * window.innerHeight
-  infoDisplay.style.left = `${x + 10}px`
-  infoDisplay.style.top = `${y + 10}px`
-  clearTimeout(infoDisplay._hideTimer)
-  infoDisplay._hideTimer = setTimeout(() => {
-    infoDisplay.style.display = "none"
-  }, 3000)
+  if (modelInfoDisplay) {
+    const dummyObject = new THREE.Object3D();
+    dummyObject.position.copy(position);
+    dummyObject.userData.info = info;
+    modelInfoDisplay.update(renderer.xr.isPresenting, [dummyObject]);
+    
+    // Tự động ẩn sau 3 giây
+    setTimeout(() => {
+      modelInfoDisplay.update(renderer.xr.isPresenting, []);
+    }, 3000);
+  }
 }
 
 function hideTriggerInfoLabel() {
-  infoDisplay.style.display = "none"
+  if (modelInfoDisplay) {
+    modelInfoDisplay.update(renderer.xr.isPresenting, []); // Truyền mảng rỗng để ẩn tất cả
+  }
 }
 
 function checkHouseTrigger() {
@@ -1983,11 +1389,35 @@ renderer.xr.addEventListener('sessionstart', () => {
   ControlsVR.setupControlsVR(viewerRig, renderer, camera);
   ControlsVR.setLocomotionMode('hybrid');
 
+  // Thêm hàm đồng bộ camera
+  function syncCameraWithVR() {
+    const xrCamera = renderer.xr.getCamera(camera);
+    // Cập nhật camera chính theo camera VR
+    camera.position.copy(xrCamera.position);
+    camera.quaternion.copy(xrCamera.quaternion);
+    camera.updateProjectionMatrix();
+  }
+
+  // Thêm callback vào animation loop để đồng bộ camera
+  const vrAnimationLoop = (timestamp, frame) => {
+    if (frame) {
+      syncCameraWithVR();
+    }
+    // Tiếp tục render scene
+    if (renderer.xr.isPresenting) {
+      updateFrame();  // Gọi hàm update/render chính
+    }
+  };
+  
+  renderer.setAnimationLoop(vrAnimationLoop);
 });
 
 renderer.xr.addEventListener('sessionend', () => {
   ControlsVR.resetControllerState();
   isVRInitialized = false;
+  // Khôi phục render loop bình thường
+  renderer.setAnimationLoop(null);  // Tắt XR animation loop
+  updateFrame();  // Khởi động lại render loop thông thường
 });
 
 
@@ -2002,16 +1432,29 @@ renderer.xr.addEventListener('sessionend', () => {
 initVR();
 
 window.addEventListener("resize", () => {
-  camera.aspect = window.innerWidth / window.innerHeight
-  camera.updateProjectionMatrix()
-  renderer.setSize(window.innerWidth, window.innerHeight)
-  composer.setSize(window.innerWidth, window.innerHeight)
+  // Update camera aspect ratio
+  mainCamera.aspect = window.innerWidth / window.innerHeight;
+  mainCamera.updateProjectionMatrix();
 
-  rainPass.uniforms.resolution.value.set(window.innerWidth, window.innerHeight)
-  lightningPass.uniforms.resolution.value.set(window.innerWidth, window.innerHeight)
-})
+  // Update renderer size
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  
+  // Update post-processing
+  if (composer) {
+    composer.setSize(window.innerWidth, window.innerHeight);
+  }
 
-renderer.setAnimationLoop(updateFrame); 
+  // Update shader uniforms
+  if (rainPass) {
+    rainPass.uniforms.resolution.value.set(window.innerWidth, window.innerHeight);
+  }
+  if (lightningPass) {
+    lightningPass.uniforms.resolution.value.set(window.innerWidth, window.innerHeight);
+  }
+});
+
+// Start animation loop
+renderer.setAnimationLoop(updateFrame);
 
 console.log(`
 === HỆ THỐNG MƯA THỰC TẾ - ĐÃ SỬA LỖI ===

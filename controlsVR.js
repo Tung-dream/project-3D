@@ -1,6 +1,3 @@
-// controlsVR.js — BẢN ĐÃ FIX VA CHẠM NHÀ (front sát hơn, ổn định)
-// Tác giả: ChatGPT (11-08-2025)
-
 import * as THREE from "three";
 import { XRControllerModelFactory } from "three/addons/webxr/XRControllerModelFactory.js";
 // Nếu bạn không dùng teleport thì có thể bỏ import dưới đây
@@ -137,14 +134,38 @@ function resolveAgainstAABBSet(current, desired, boxes, radius, skin, hysteresis
 function clampToGround(groundMesh, pos) {
   if (!groundMesh) return pos;
   const box = new THREE.Box3().setFromObject(groundMesh);
-  pos.x = THREE.MathUtils.clamp(pos.x, box.min.x + PLAYER_RADIUS, box.max.x - PLAYER_RADIUS);
-  pos.z = THREE.MathUtils.clamp(pos.z, box.min.z + PLAYER_RADIUS, box.max.z - PLAYER_RADIUS);
+  // Thêm margin an toàn để người dùng không bị kẹt ở rìa
+  const safeMargin = PLAYER_RADIUS * 1.1;
+  pos.x = THREE.MathUtils.clamp(pos.x, box.min.x + safeMargin, box.max.x - safeMargin);
+  pos.z = THREE.MathUtils.clamp(pos.z, box.min.z + safeMargin, box.max.z - safeMargin);
   return pos;
 }
 
 /* ================== THIẾT LẬP CONTROLLERS ================== */
 function setupControlsVR(viewerRig, renderer, camera) {
   const factory = new XRControllerModelFactory();
+  
+  // Thêm listener cho sự kiện XRFrame để đồng bộ góc nhìn
+  renderer.xr.addEventListener('sessionstart', () => {
+    console.log('VR Session started - Enabling view sync');
+  });
+
+  function updateCameraFromXRPose() {
+    const xrCamera = renderer.xr.getCamera();
+    if (xrCamera) {
+      // Đồng bộ vị trí và hướng nhìn từ camera VR sang camera chính
+      camera.position.copy(xrCamera.position);
+      camera.quaternion.copy(xrCamera.quaternion);
+      camera.updateProjectionMatrix();
+    }
+  }
+
+  // Thêm callback để cập nhật camera trong mỗi frame VR
+  renderer.setAnimationLoop((timestamp, frame) => {
+    if (frame) {
+      updateCameraFromXRPose();
+    }
+  });
 
   for (let i = 0; i < 2; i++) {
     const ctrl = renderer.xr.getController(i);

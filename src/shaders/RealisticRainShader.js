@@ -1,4 +1,4 @@
-import * as THREE from "three"
+import * as THREE from 'three';
 
 export const RealisticRainShader = {
   uniforms: {
@@ -22,7 +22,6 @@ export const RealisticRainShader = {
     uniform vec2 resolution;
     uniform float rainIntensity;
     uniform vec2 windDirection;
-    uniform vec3 cameraPosition;
     varying vec2 vUv;
     
     float random(vec2 st) {
@@ -95,4 +94,4 @@ export const RealisticRainShader = {
       gl_FragColor = finalColor;
     }
   `,
-}
+};

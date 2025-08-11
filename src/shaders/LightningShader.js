@@ -1,4 +1,4 @@
-import * as THREE from "three"
+import * as THREE from 'three';
 
 export const LightningShader = {
   uniforms: {
@@ -21,7 +21,7 @@ export const LightningShader = {
     uniform float time;
     uniform vec2 resolution;
     uniform float lightningIntensity;
-    uniform float lightningPosition;
+    uniform vec2 lightningPosition;
     uniform float lightningBranches;
     varying vec2 vUv;
     
@@ -60,7 +60,7 @@ export const LightningShader = {
       vec2 uv = gl_FragCoord.xy / resolution.xy;
       
       float bolt = 0.0;
-      
+
       vec2 start = lightningPosition;
       vec2 end = vec2(lightningPosition.x + (noise(vec2(time * 5.0)) - 0.5) * 0.3, 0.0);
       bolt += lightning(uv, start, end, 0.005) * 2.0;
@@ -84,4 +84,4 @@ export const LightningShader = {
       gl_FragColor = vec4(lightningColor, glow * lightningIntensity);
     }
   `,
-}
+};
