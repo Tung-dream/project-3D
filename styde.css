@@ -1,0 +1,91 @@
+  body {
+    margin: 0;
+    overflow: hidden;
+}
+
+canvas {
+    display: block;
+}
+  
+  .info-label {
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 10px;
+            border-radius: 5px;
+            font-family: Arial, sans-serif;
+            font-size: 14px;
+            max-width: 200px;
+            pointer-events: none;
+        }
+    .model-label {
+  position: absolute;
+  white-space: nowrap;
+  transform: translate(-50%, -100%);
+}
+.model-label {
+  position: absolute;
+  background: white;
+  border: 2px dashed black;
+  border-radius: 15px;
+  padding: 8px 12px;
+  max-width: 200px;
+  font-size: 13px;
+  font-weight: bold;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+  pointer-events: none;
+  z-index: 100;
+  transform: translate(-50%, -100%);
+}
+.model-label::after {
+  content: '';
+  position: absolute;
+  bottom: -15px;
+  left: 50%;
+  margin-left: -10px;
+  width: 0;
+  height: 0;
+  border: 10px solid transparent;
+  border-top-color: white;
+}
+
+.info-bubble {
+            position: absolute;
+            background-color: transparent; /* Sẽ dùng background-image */
+            color: black; /* Màu chữ bên trong bong bóng */
+            padding: 10px 15px; /* Khoảng cách chữ với viền bong bóng */
+            border-radius: 10px;
+            font-family: 'Arial', sans-serif;
+            font-size: 14px;
+            font-weight: bold;
+            pointer-events: none; /* Không chặn sự kiện chuột */
+            white-space: nowrap; /* Ngăn chữ xuống dòng */
+            z-index: 100;
+            display: flex; /* Dùng flexbox để căn giữa nội dung */
+            align-items: center;
+            justify-content: center;
+            background-image: url('your_bubble_image.png'); /* Đặt đường dẫn đến ảnh bong bóng của bạn */
+            background-size: 100% 100%; /* Đảm bảo ảnh nền vừa khít khung */
+            background-repeat: no-repeat;
+            filter: drop-shadow(2px 2px 5px rgba(0,0,0,0.5)); /* Thêm đổ bóng */
+            min-width: 100px; /* Chiều rộng tối thiểu */
+            min-height: 50px; /* Chiều cao tối thiểu */
+            text-align: center;
+        }
+
+        /* Phần tử chỉ vào mô hình (mũi tên) */
+        .info-bubble::after {
+            content: '';
+            position: absolute;
+            width: 0;
+            height: 0;
+            border-style: solid;
+            border-width: 10px 10px 0 10px; /* Kích thước mũi tên */
+            border-color: black transparent transparent transparent; /* Màu mũi tên */
+            top: 100%; /* Đặt mũi tên ở dưới bong bóng */
+            left: 50%;
+            transform: translateX(-50%); /* Căn giữa mũi tên */
+            filter: drop-shadow(1px 1px 2px rgba(0,0,0,0.5)); /* Đổ bóng cho mũi tên */
+        }
+
+        
+
